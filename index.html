@@ -56,7 +56,11 @@
         proxy: ">
     </a-entity>
 
-    <a-camera wasd-controls-enabled="false" look-controls></a-camera>
+    <a-camera wasd-controls-enabled="false" look-controls>
+      <!-- VR内デバッグ表示（コントローラーの生の値を表示。原因特定後は削除可） -->
+      <a-text id="dbg" value="diag..." color="#39FF14" align="center"
+              width="2.4" position="0 -0.5 -1.2" baseline="top"></a-text>
+    </a-camera>
     <a-entity laser-controls="hand: right"></a-entity>
     <a-entity laser-controls="hand: left"></a-entity>
   </a-scene>
@@ -216,20 +220,36 @@
       });
     },
 
-    // VR中は毎フレーム、両コントローラーのスティックYを「生のgamepad軸」から直接読む。
-    //   PICO等では thumbstickmoved イベントが出ないことがあるため、イベントに頼らずポーリングする。
+    // 【診断版】VR内に各コントローラーの生の axes 値を表示し、
+    //   一番大きく動いた軸でとりあえず移動させる（軸番号と符号を特定するため）。
     tick: function () {
-      const session = this.el.sceneEl.xrSession;
-      if (!session || !session.inputSources) return;   // VRモード中のみ動作
-      let y;
-      for (let i = 0; i < session.inputSources.length; i++) {
-        const gp = session.inputSources[i].gamepad;
-        if (!gp || !gp.axes) continue;
-        // xr-standard 軸配列: [touchpadX, touchpadY, stickX, stickY]。4軸未満なら[1]を使う
-        const ty = (gp.axes.length >= 4) ? gp.axes[3] : gp.axes[1];
-        if (ty !== undefined && (y === undefined || Math.abs(ty) > Math.abs(y))) y = ty;
+      const dbg = document.getElementById('dbg');
+      const xr = this.el.sceneEl.renderer && this.el.sceneEl.renderer.xr;
+      const session = (xr && xr.getSession && xr.getSession()) || this.el.sceneEl.xrSession;
+
+      if (!session || !session.inputSources || !session.inputSources.length) {
+        if (dbg) dbg.setAttribute('value', 'no XR session / no controllers');
+        return;
       }
-      if (y !== undefined) this.handleAxis(y);
+
+      const lines = [];
+      let best = { val: 0, axis: -1, src: -1 };
+      for (let i = 0; i < session.inputSources.length; i++) {
+        const src = session.inputSources[i];
+        const gp = src.gamepad;
+        if (!gp) { lines.push('src' + i + ': no gamepad'); continue; }
+        const ax = Array.from(gp.axes).map(v => v.toFixed(2));
+        lines.push('src' + i + ' [' + (src.handedness || '?') + '] axes:[' + ax.join(', ') + ']');
+        for (let a = 0; a < gp.axes.length; a++) {
+          if (Math.abs(gp.axes[a]) > Math.abs(best.val)) best = { val: gp.axes[a], axis: a, src: i };
+        }
+      }
+      if (dbg) dbg.setAttribute('value',
+        lines.join('\n') + '\n>> biggest: src' + best.src + ' axis' + best.axis + ' = ' + best.val.toFixed(2));
+
+      // 一番大きく倒れた軸で移動を試す（動けば「移動自体はOK／あとは軸選びだけ」と分かる）
+      if (Math.abs(best.val) > 0.6) this.handleAxis(best.val);
+      else this.handleAxis(0);
     }
   });
 
