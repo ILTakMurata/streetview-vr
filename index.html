@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<!--
+  Street View → A-Frame（キューブマップ方式）  ※挑戦枠 / 保険デモ
+  ------------------------------------------------------------------
+  ・公式 Street View Static API の画像6枚（前後左右＋上下）を箱の内側に貼り、
+    A-Frame / WebXR で首振り表示する。古い aframe-streetview-component（削除済み・
+    内部タイル直叩き）より壊れにくい“文書化されたAPI”を使う。
+  ・要 HTTPS 配信（GitHub Pages / Netlify / Cloudflare Pages 等）。
+  ・要：Google Cloud で「Street View Static API」を有効化し、API キーの制限が
+    それを許可していること（Map Tiles 専用に絞っていると弾かれる）。
+  ・想定される最初の壁は2つ → 下の「テスト時メモ」参照。
+      (1) CORS で面が真っ黒  … PROXY を設定（後述のWorker）
+      (2) 継ぎ目/上下のズレ   … HEADING / 各面の回転を微調整
+  ------------------------------------------------------------------
+-->
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Street View 360° (A-Frame)</title>
+  <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+  <style>
+    html,body{margin:0;height:100%;background:#0E1118;color:#ECEEF4;
+      font-family:"Hiragino Kaku Gothic ProN","Yu Gothic UI",system-ui,sans-serif;overflow:hidden;}
+    #hud{position:fixed;left:16px;top:16px;z-index:10;max-width:min(360px,90vw);
+      background:rgba(20,25,36,.86);border:1px solid #2A3142;border-radius:12px;
+      padding:12px 14px;backdrop-filter:blur(8px);}
+    #hud h1{margin:0 0 4px;font-size:16px;}
+    #status{font-size:12.5px;color:#9AA3B5;margin:2px 0 0;line-height:1.5;}
+    #enter{margin-top:10px;width:100%;cursor:pointer;font:inherit;font-weight:800;
+      color:#0E1118;background:#C9A24B;border:none;border-radius:9px;padding:11px;}
+    #enter:active{transform:translateY(1px);}
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <h1>Street View 360°</h1>
+    <p id="status">読み込み中…</p>
+    <button id="enter">VRで見る</button>
+  </div>
+
+  <a-scene background="color: #0E1118" renderer="colorManagement: true; antialias: true"
+           vr-mode-ui="enabled: true">
+    <!-- ↓ ここのパラメータを書き換えるだけ -->
+    <a-entity id="sv"
+      sv-cubemap="
+        key: AIzaSyBxrs-r-FYvqsZUS6Mg9jKXgcaOi-Kc6O4;
+        lat: 35.44579676097165;
+        lng: 139.64976890646292;
+        heading: 0;
+        size: 640;
+        radius: 80;
+        proxy: ">
+    </a-entity>
+
+    <a-camera wasd-controls-enabled="false" look-controls></a-camera>
+    <a-entity laser-controls="hand: right"></a-entity>
+    <a-entity laser-controls="hand: left"></a-entity>
+  </a-scene>
+
+  <script>
+  AFRAME.registerComponent('sv-cubemap', {
+    schema: {
+      key:    {type:'string'},
+      lat:    {type:'number'},
+      lng:    {type:'number'},
+      heading:{type:'number', default:0},
+      size:   {type:'number', default:640},
+      radius: {type:'number', default:50},
+      proxy:  {type:'string', default:''}   // 例: https://xxx.workers.dev/?url=
+    },
+    init: function () {
+      const d = this.data;
+      const status = document.getElementById('status');
+
+      // three.js BoxGeometry のマテリアル順: [+X, -X, +Y, -Y, +Z, -Z]
+      //   A-Frame の既定カメラは -Z を向く = 正面。よって -Z 面に heading(正面) を割り当てる。
+      const faces = [
+        { idx:0, heading: d.heading + 90, pitch:0   }, // +X 右
+        { idx:1, heading: d.heading - 90, pitch:0   }, // -X 左
+        { idx:2, heading: d.heading,      pitch:90  }, // +Y 上
+        { idx:3, heading: d.heading,      pitch:-90 }, // -Y 下
+        { idx:4, heading: d.heading + 180,pitch:0   }, // +Z 後
+        { idx:5, heading: d.heading,      pitch:0   }  // -Z 正面
+      ];
+
+      const loader = new THREE.TextureLoader();
+      loader.setCrossOrigin('anonymous');
+      const materials = new Array(6);
+      let pending = 6, failed = 0;
+
+      const buildUrl = (heading, pitch) => {
+        const h = ((heading % 360) + 360) % 360;
+        const target =
+          'https://maps.googleapis.com/maps/api/streetview' +
+          `?size=${d.size}x${d.size}&location=${d.lat},${d.lng}` +
+          `&fov=90&heading=${h}&pitch=${pitch}&radius=${d.radius}` +
+          `&source=outdoor&return_error_code=true&key=${d.key}`;
+        return d.proxy ? d.proxy + encodeURIComponent(target) : target;
+      };
+
+      faces.forEach(f => {
+        const url = buildUrl(f.heading, f.pitch);
+        const tex = loader.load(
+          url,
+          () => { if (--pending === 0) finish(); },
+          undefined,
+          (e) => { failed++; console.error('SV face load error idx=' + f.idx, e);
+                   if (--pending === 0) finish(); }
+        );
+        tex.colorSpace = THREE.SRGBColorSpace;
+        // BackSide（箱の内側）で見ると左右反転するので水平フリップで補正
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.repeat.x = -1; tex.offset.x = 1;
+        // 上下面は heading に合わせて面内回転が必要になることが多い（テストで調整）
+        if (f.idx === 2 || f.idx === 3) {
+          tex.center.set(0.5, 0.5);
+          tex.rotation = THREE.MathUtils.degToRad(f.idx === 2 ? -d.heading : d.heading);
+        }
+        materials[f.idx] = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide });
+      });
+
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(500, 500, 500), materials);
+      this.el.setObject3D('mesh', mesh);
+
+      function finish() {
+        if (failed === 0) status.textContent = '読み込み完了。ドラッグ／首振りで見渡せます。';
+        else status.textContent =
+          `${failed}/6 面が読み込めませんでした。コンソールに CORS エラーが出ていれば PROXY を設定してください。`;
+      }
+    }
+  });
+
+  document.getElementById('enter').addEventListener('click', () => {
+    const scene = document.querySelector('a-scene');
+    if (scene.enterVR) scene.enterVR();
+  });
+  </script>
+</body>
+</html>
