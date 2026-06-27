@@ -115,11 +115,15 @@
     buildUrl: function (heading, pitch) {
       const d = this.data;
       const h = ((heading % 360) + 360) % 360;
+      // パノラマIDが分かっていれば pano= で確実に一致させる。無ければ座標＋半径で取得。
+      const place = this.panoId
+        ? `pano=${this.panoId}`
+        : `location=${d.lat},${d.lng}&radius=${d.radius}`;
       const target =
         'https://maps.googleapis.com/maps/api/streetview' +
-        `?size=${d.size}x${d.size}&location=${d.lat},${d.lng}` +
-        `&fov=90&heading=${h}&pitch=${pitch}&radius=${d.radius}` +
-        `&source=outdoor&return_error_code=true&key=${d.key}`;
+        `?size=${d.size}x${d.size}&${place}` +
+        `&fov=90&heading=${h}&pitch=${pitch}` +
+        `&return_error_code=true&key=${d.key}`;
       return d.proxy ? d.proxy + encodeURIComponent(target) : target;
     },
 
@@ -194,12 +198,12 @@
       }
     },
 
-    // メタデータAPI（無料）のURLを作る
+    // メタデータAPI（無料）のURLを作る。source=outdoor は付けない（屋外限定で弾かれるのを防ぐ）
     metaUrl: function (lat, lng) {
       const d = this.data;
       const u = 'https://maps.googleapis.com/maps/api/streetview/metadata' +
                 '?location=' + lat + ',' + lng + '&radius=' + d.radius +
-                '&source=outdoor&key=' + d.key;
+                '&key=' + d.key;
       return d.proxy ? d.proxy + encodeURIComponent(u) : u;
     },
 
