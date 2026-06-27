@@ -209,21 +209,27 @@
 
     bindControls: function () {
       const self = this;
-      document.querySelectorAll('[laser-controls]').forEach(el => {
-        // PICO / Quest など既知マッピング：detail.y（前=負）
-        el.addEventListener('thumbstickmoved', e => self.handleAxis(e.detail.y));
-        // 汎用WebXR向けフォールバック：axes[3]がスティックY（無ければ[1]）
-        el.addEventListener('axismove', e => {
-          const ax = e.detail.axis || [];
-          const y  = (ax[3] !== undefined) ? ax[3] : ax[1];
-          if (y !== undefined) self.handleAxis(y);
-        });
-      });
       // PCテスト用キーボード（↑/W=前進, ↓/S=後退）
       window.addEventListener('keydown', e => {
         if (e.key === 'ArrowUp'   || e.key === 'w' || e.key === 'W') self.move(+1);
         if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') self.move(-1);
       });
+    },
+
+    // VR中は毎フレーム、両コントローラーのスティックYを「生のgamepad軸」から直接読む。
+    //   PICO等では thumbstickmoved イベントが出ないことがあるため、イベントに頼らずポーリングする。
+    tick: function () {
+      const session = this.el.sceneEl.xrSession;
+      if (!session || !session.inputSources) return;   // VRモード中のみ動作
+      let y;
+      for (let i = 0; i < session.inputSources.length; i++) {
+        const gp = session.inputSources[i].gamepad;
+        if (!gp || !gp.axes) continue;
+        // xr-standard 軸配列: [touchpadX, touchpadY, stickX, stickY]。4軸未満なら[1]を使う
+        const ty = (gp.axes.length >= 4) ? gp.axes[3] : gp.axes[1];
+        if (ty !== undefined && (y === undefined || Math.abs(ty) > Math.abs(y))) y = ty;
+      }
+      if (y !== undefined) this.handleAxis(y);
     }
   });
 
