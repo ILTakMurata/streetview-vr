@@ -93,7 +93,7 @@
       this.bindControls();
       // 初期パノラマIDを取得（最初の1歩から正しく次の点へ進めるように）
       const self0 = this;
-      fetch(this.metaUrl(this.data.lat, this.data.lng))
+      fetch(this.metaUrl(this.data.lat, this.data.lng), { referrerPolicy: 'unsafe-url' })
         .then(r => r.json())
         .then(m => { if (m.status === 'OK') self0.panoId = m.pano_id; })
         .catch(() => {});
@@ -238,7 +238,7 @@
       const d = this.data, self = this;
       const t = this.offset(d.lat, d.lng, bearing, dist);
       this.moveMsg = 'meta? n' + this.moveCount + ' a' + attempt + ' b=' + bearing.toFixed(0);
-      fetch(this.metaUrl(t.lat, t.lng))
+      fetch(this.metaUrl(t.lat, t.lng), { referrerPolicy: 'unsafe-url' })
         .then(r => r.json())
         .then(meta => {
           if (meta.status === 'OK' && meta.location) {
@@ -257,7 +257,7 @@
             self.tryStep(bearing, dist + d.step, attempt + 1);
           } else {
             self.loading = false;
-            self.moveMsg = 'no pano (' + meta.status + ')';
+            self.moveMsg = 'no pano [' + meta.status + '] ' + (meta.error_message || '');
             self.status.textContent = 'その方向にはこれ以上進めません。';
           }
         })
