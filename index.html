@@ -86,6 +86,7 @@
       this.axisReady  = true;    // スティックが中立に戻ったか（連射防止）
       this.lastLat    = this.data.lat;   // 最後に表示できた地点（移動失敗時はここへ戻す）
       this.lastLng    = this.data.lng;
+      this.moveMsg    = '-';             // 診断用：直近の移動結果
       this.loadCubemap();
       this.bindControls();
     },
@@ -168,6 +169,7 @@
           d.lat = self.lastLat; d.lng = self.lastLng;
           materials.forEach(m => { if (m) { if (m.map) m.map.dispose(); m.dispose(); } });
           self.status.textContent = 'その方向にはこれ以上進めません。';
+          self.moveMsg = 'BLOCKED (no image)';
           return;
         }
 
@@ -176,6 +178,7 @@
         self.disposeMesh();
         self.el.setObject3D('mesh', mesh);
         self.lastLat = d.lat; self.lastLng = d.lng;
+        self.moveMsg = isMove ? 'MOVED ok' : 'init';
 
         if (failed === 0) self.status.textContent = 'スティック前後で移動／首振りで見渡せます。';
         else self.status.textContent =
@@ -244,8 +247,24 @@
           if (Math.abs(gp.axes[a]) > Math.abs(best.val)) best = { val: gp.axes[a], axis: a, src: i };
         }
       }
+      // カメラ（頭）の向きと、そこから計算される進行方位を表示
+      let camInfo = 'cam: none';
+      const cam = this.el.sceneEl.camera;
+      if (cam) {
+        const dir = new THREE.Vector3();
+        cam.getWorldDirection(dir);
+        let bearing = this.data.heading + THREE.MathUtils.radToDeg(Math.atan2(dir.x, -dir.z));
+        bearing = ((bearing % 360) + 360) % 360;
+        camInfo = 'look x=' + dir.x.toFixed(2) + ' z=' + dir.z.toFixed(2) + ' bearing=' + bearing.toFixed(0);
+      }
+
       if (dbg) dbg.setAttribute('value',
-        lines.join('\n') + '\n>> biggest: src' + best.src + ' axis' + best.axis + ' = ' + best.val.toFixed(2));
+        lines.join('\n') +
+        '\n>> biggest: src' + best.src + ' axis' + best.axis + ' = ' + best.val.toFixed(2) +
+        '\n' + camInfo +
+        '\npos: ' + this.data.lat.toFixed(5) + ', ' + this.data.lng.toFixed(5) +
+        '  loading=' + this.loading +
+        '\nlastMove: ' + this.moveMsg);
 
       // 一番大きく倒れた軸で移動を試す（動けば「移動自体はOK／あとは軸選びだけ」と分かる）
       if (Math.abs(best.val) > 0.6) this.handleAxis(best.val);
