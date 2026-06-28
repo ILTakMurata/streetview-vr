@@ -146,8 +146,8 @@
     renderToCube: function (boxMesh) {
       const renderer = this.el.sceneEl.renderer;
       const rt = new THREE.WebGLCubeRenderTarget(this.data.size, {
-        generateMipmaps: false,
-        minFilter: THREE.LinearFilter,
+        generateMipmaps: true,                        // 極付近のぼかし(ミップバイアス)に使う
+        minFilter: THREE.LinearMipmapLinearFilter,
         magFilter: THREE.LinearFilter
       });
       rt.texture.colorSpace = THREE.SRGBColorSpace;   // 箱の色味をそのまま保持
@@ -175,7 +175,12 @@
           'uniform float opacity;\n' +
           'varying vec3 vDir;\n' +
           'void main(){\n' +
-          '  gl_FragColor = textureCube(tCube, normalize(vDir));\n' +
+          '  vec3 dir = normalize(vDir);\n' +
+          '  // 真上/真下に近いほどミップを上げて(=ぼかして)上下面の継ぎ目を溶かす。\n' +
+          '  // POLE_START(0.45=約27°)から POLE_END(0.9=約64°)にかけて徐々にぼかし、最大 POLE_BLUR。\n' +
+          '  float pole = smoothstep(0.45, 0.9, abs(dir.y));\n' +
+          '  float bias = pole * 5.0;\n' +
+          '  gl_FragColor = textureCube(tCube, dir, bias);\n' +
           '  gl_FragColor.a *= opacity;\n' +
           '}',
         side: THREE.BackSide,
