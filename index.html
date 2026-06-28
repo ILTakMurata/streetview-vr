@@ -70,7 +70,7 @@
       heading:{type:'number', default:0},
       size:   {type:'number', default:640},
       radius: {type:'number', default:50},
-      step:   {type:'number', default:15},   // 1歩で進む距離(m)。大きいほど大きく移動
+      step:   {type:'number', default:10},   // 1歩で進む距離(m)。Google地図の隣パノラマ間隔(市街地≒10m)に合わせた近似。同じ点ならリトライで延長して隣の撮影点を1つずつ渡る
       proxy:  {type:'string', default:''}    // 例: https://xxx.workers.dev/?url=
     },
 
@@ -398,7 +398,7 @@
       oldMesh.renderOrder = 999;          // 新しい景色より常に手前に描画
       oldMesh.scale.set(1, 1, 1);
       this.el.setObject3D('mesh_fade', oldMesh);
-      this.fade = { mesh: oldMesh, t: 0, dur: 0.45 };   // 0.45秒で消える
+      this.fade = { mesh: oldMesh, t: 0, dur: 0.9 };   // 0.9秒かけてゆっくり消える
     },
 
     // スティック入力を「1回倒す=1歩」に変換（倒しっぱなしの連射＝課金暴走を防止）
@@ -428,8 +428,9 @@
         this.fade.t += (dt || 16) / 1000;
         const k = Math.min(this.fade.t / this.fade.dur, 1);   // 0→1
         const m = this.fade.mesh;
-        if (m.material.uniforms && m.material.uniforms.opacity) m.material.uniforms.opacity.value = 1 - k;
-        const s = 1 + 0.18 * k;                               // 前進しているような軽いズーム
+        // フェードはズームに対して後ろ寄り(1 - k*k)。ズーム中は不透明を保ち、終盤に消える＝ズーム＞フェード。
+        if (m.material.uniforms && m.material.uniforms.opacity) m.material.uniforms.opacity.value = 1 - k * k;
+        const s = 1 + 0.4 * k;                                // 前進しているような前へのズーム（強め）
         m.scale.set(s, s, s);
         if (k >= 1) { this.el.removeObject3D('mesh_fade'); this.disposeSphere(m); this.fade = null; }
       }
