@@ -56,11 +56,7 @@
         proxy: ">
     </a-entity>
 
-    <a-camera wasd-controls-enabled="false" look-controls>
-      <!-- VR内デバッグ表示（原因特定後は削除可） -->
-      <a-text id="dbg" value="diag..." color="#39FF14" align="center"
-              width="1.8" position="0 0.25 -1.3" baseline="top"></a-text>
-    </a-camera>
+    <a-camera wasd-controls-enabled="false" look-controls></a-camera>
     <a-entity laser-controls="hand: right"></a-entity>
     <a-entity laser-controls="hand: left"></a-entity>
   </a-scene>
@@ -86,8 +82,6 @@
       this.axisReady  = true;    // スティックが中立に戻ったか（連射防止）
       this.lastLat    = this.data.lat;   // 最後に表示できた地点（移動失敗時はここへ戻す）
       this.lastLng    = this.data.lng;
-      this.moveMsg    = '-';             // 診断用：直近の移動結果
-      this.moveCount  = 0;
       this.panoId     = null;            // 現在のパノラマID（同じ点への移動を避けるため）
       this.loadCubemap();
       this.bindControls();
@@ -181,7 +175,6 @@
           d.lat = self.lastLat; d.lng = self.lastLng;
           materials.forEach(m => { if (m) { if (m.map) m.map.dispose(); m.dispose(); } });
           self.status.textContent = 'その方向にはこれ以上進めません。';
-          self.moveMsg = 'BLOCKED (no image)';
           return;
         }
 
@@ -190,7 +183,6 @@
         self.disposeMesh();
         self.el.setObject3D('mesh', mesh);
         self.lastLat = d.lat; self.lastLng = d.lng;
-        self.moveMsg = isMove ? 'MOVED ok' : 'init';
 
         if (failed === 0) self.status.textContent = 'スティック前後で移動／首振りで見渡せます。';
         else self.status.textContent =
@@ -227,7 +219,6 @@
       let bearing = this.data.heading + THREE.MathUtils.radToDeg(Math.atan2(dir.x, -dir.z));
       if (sign < 0) bearing += 180;
       bearing = ((bearing % 360) + 360) % 360;
-      this.moveCount++;
       this.loading = true;              // 探索中も入力をブロック
       this.tryStep(bearing, this.data.step, 0);
     },
@@ -237,7 +228,6 @@
     tryStep: function (bearing, dist, attempt) {
       const d = this.data, self = this;
       const t = this.offset(d.lat, d.lng, bearing, dist);
-      this.moveMsg = 'meta? n' + this.moveCount + ' a' + attempt + ' b=' + bearing.toFixed(0);
       fetch(this.metaUrl(t.lat, t.lng), { referrerPolicy: 'unsafe-url' })
         .then(r => r.json())
         .then(meta => {
@@ -257,13 +247,12 @@
             self.tryStep(bearing, dist + d.step, attempt + 1);
           } else {
             self.loading = false;
-            self.moveMsg = 'no pano [' + meta.status + '] ' + (meta.error_message || '');
             self.status.textContent = 'その方向にはこれ以上進めません。';
           }
         })
         .catch(err => {
           self.loading = false;
-          self.moveMsg = 'meta ERR: ' + (err && err.message ? err.message : err);
+          self.status.textContent = 'その方向にはこれ以上進めません。';
           console.error('metadata fetch error', err);
         });
     },
@@ -286,15 +275,10 @@
     },
 
     // 毎フレーム：両コントローラーのスティックY（axes[3]）を読み、移動を駆動。
-    //   兼デバッグ表示（3行）。動作確認できたら <a-text id="dbg"> 行は削除してOK。
     tick: function () {
-      const dbg = document.getElementById('dbg');
       const xr = this.el.sceneEl.renderer && this.el.sceneEl.renderer.xr;
       const session = (xr && xr.getSession && xr.getSession()) || this.el.sceneEl.xrSession;
-      if (!session || !session.inputSources || !session.inputSources.length) {
-        if (dbg) dbg.setAttribute('value', 'no XR session');
-        return;
-      }
+      if (!session || !session.inputSources || !session.inputSources.length) return;
 
       let y = 0;
       for (let i = 0; i < session.inputSources.length; i++) {
@@ -302,20 +286,6 @@
         if (!gp || !gp.axes) continue;
         const ty = (gp.axes.length >= 4) ? gp.axes[3] : gp.axes[1];  // スティックY
         if (ty !== undefined && Math.abs(ty) > Math.abs(y)) y = ty;
-      }
-
-      if (dbg) {
-        let bearing = 0;
-        const cam = this.el.sceneEl.camera;
-        if (cam) {
-          const dir = new THREE.Vector3();
-          cam.getWorldDirection(dir);
-          bearing = ((this.data.heading + THREE.MathUtils.radToDeg(Math.atan2(dir.x, -dir.z))) % 360 + 360) % 360;
-        }
-        dbg.setAttribute('value',
-          'stickY=' + y.toFixed(2) + '  bearing=' + bearing.toFixed(0) + '\n' +
-          'pos ' + this.data.lat.toFixed(5) + ',' + this.data.lng.toFixed(5) + '  loading=' + this.loading + '\n' +
-          'move: ' + this.moveMsg);
       }
 
       this.handleAxis(y);
