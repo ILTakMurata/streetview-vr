@@ -132,6 +132,60 @@
       if (mesh.geometry) mesh.geometry.dispose();
     },
 
+    // 球体メッシュ（キューブRTを参照）を破棄。RT(GPUメモリ)も忘れず解放する。
+    disposeSphere: function (mesh) {
+      if (!mesh) return;
+      if (mesh.material) mesh.material.dispose();
+      if (mesh.geometry) mesh.geometry.dispose();
+      if (mesh.userData && mesh.userData.cubeRT) mesh.userData.cubeRT.dispose();
+    },
+
+    // 画面外の箱(6面)を CubeCamera で1枚のキューブテクスチャに焼く。
+    //   箱の面の向きは既存ロジックそのまま → 焼けたキューブの向きも自動的に正しい。
+    //   CubeCamera.update は内部で xr.enabled を一時OFFにするので XR中でも安全。
+    renderToCube: function (boxMesh) {
+      const renderer = this.el.sceneEl.renderer;
+      const rt = new THREE.WebGLCubeRenderTarget(this.data.size, {
+        generateMipmaps: false,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter
+      });
+      rt.texture.colorSpace = THREE.SRGBColorSpace;   // 箱の色味をそのまま保持
+      const cam = new THREE.CubeCamera(1, 2000, rt);
+      const scene = new THREE.Scene();
+      scene.add(boxMesh);
+      cam.update(renderer, scene);
+      scene.remove(boxMesh);
+      return rt;
+    },
+
+    // キューブテクスチャを内側から見る球体。WebGL2のシームレス・キューブサンプリングで継ぎ目が滑らか。
+    //   render target 由来のキューブは左右反転が無い（tFlip=+1）ので方向はそのまま使う。
+    makeSphere: function (cubeRT) {
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { tCube: { value: cubeRT.texture }, opacity: { value: 1.0 } },
+        vertexShader:
+          'varying vec3 vDir;\n' +
+          'void main(){\n' +
+          '  vDir = normalize( mat3(modelMatrix) * position );\n' +
+          '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);\n' +
+          '}',
+        fragmentShader:
+          'uniform samplerCube tCube;\n' +
+          'uniform float opacity;\n' +
+          'varying vec3 vDir;\n' +
+          'void main(){\n' +
+          '  gl_FragColor = textureCube(tCube, normalize(vDir));\n' +
+          '  gl_FragColor.a *= opacity;\n' +
+          '}',
+        side: THREE.BackSide,
+        transparent: false
+      });
+      const sphere = new THREE.Mesh(new THREE.SphereGeometry(500, 64, 40), mat);
+      sphere.userData.cubeRT = cubeRT;   // 破棄時に解放するため保持
+      return sphere;
+    },
+
     // 現在の d.lat / d.lng / d.heading でキューブを（再）構築。
     //   isMove=true（移動時）に 6/6 失敗したら暗転させず元の景色へ引き返す。
     loadCubemap: function (isMove) {
@@ -177,16 +231,21 @@
           return;
         }
 
-        // 新しい箱を前面に出し、表示成功した地点を記録
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(500, 500, 500), materials);
+        // 6面の箱を画面外で組み、CubeCameraでキューブに焼いてから、継ぎ目のない球体として表示。
+        //   箱の面の向きは実績ある既存ロジックそのままなので向きズレの心配が少ない。
+        const boxMesh = new THREE.Mesh(new THREE.BoxGeometry(500, 500, 500), materials);
+        const cubeRT  = self.renderToCube(boxMesh);
+        self.disposeMeshObj(boxMesh);                  // テクスチャはRTに焼いたので破棄OK
+
+        const sphere  = self.makeSphere(cubeRT);       // 継ぎ目のない球
         const oldMesh = self.el.getObject3D('mesh');   // 直前まで見ていた景色
-        self.el.setObject3D('mesh', mesh);             // setObject3D が old を親から外す
+        self.el.setObject3D('mesh', sphere);           // setObject3D が old を親から外す
         self.lastLat = d.lat; self.lastLng = d.lng;
 
         // 移動時は「前の景色を手前に残して徐々に消す＋軽くズーム」でGoogleマップ風に繋ぐ。
         // 初回ロードや非移動時は単純に破棄。
         if (isMove && oldMesh) self.startFade(oldMesh);
-        else if (oldMesh)      self.disposeMeshObj(oldMesh);
+        else if (oldMesh)      self.disposeSphere(oldMesh);
 
         if (failed === 0) self.status.textContent = 'スティック前後で移動／首振りで見渡せます。';
         else self.status.textContent =
@@ -265,11 +324,9 @@
     //   実際の描画(透過の更新)は tick() が毎フレーム進める。
     startFade: function (oldMesh) {
       // 進行中のフェードがあれば（連続移動）即終了して破棄
-      if (this.fade) { this.el.removeObject3D('mesh_fade'); this.disposeMeshObj(this.fade.mesh); this.fade = null; }
-      (Array.isArray(oldMesh.material) ? oldMesh.material : [oldMesh.material]).forEach(m => {
-        if (!m) return;
-        m.transparent = true; m.depthTest = false; m.depthWrite = false; m.needsUpdate = true;
-      });
+      if (this.fade) { this.el.removeObject3D('mesh_fade'); this.disposeSphere(this.fade.mesh); this.fade = null; }
+      const mat = oldMesh.material;
+      mat.transparent = true; mat.depthTest = false; mat.depthWrite = false; mat.needsUpdate = true;
       oldMesh.renderOrder = 999;          // 新しい景色より常に手前に描画
       oldMesh.scale.set(1, 1, 1);
       this.el.setObject3D('mesh_fade', oldMesh);
@@ -300,10 +357,10 @@
         this.fade.t += (dt || 16) / 1000;
         const k = Math.min(this.fade.t / this.fade.dur, 1);   // 0→1
         const m = this.fade.mesh;
-        (Array.isArray(m.material) ? m.material : [m.material]).forEach(mt => { if (mt) mt.opacity = 1 - k; });
+        if (m.material.uniforms && m.material.uniforms.opacity) m.material.uniforms.opacity.value = 1 - k;
         const s = 1 + 0.18 * k;                               // 前進しているような軽いズーム
         m.scale.set(s, s, s);
-        if (k >= 1) { this.el.removeObject3D('mesh_fade'); this.disposeMeshObj(m); this.fade = null; }
+        if (k >= 1) { this.el.removeObject3D('mesh_fade'); this.disposeSphere(m); this.fade = null; }
       }
 
       const xr = this.el.sceneEl.renderer && this.el.sceneEl.renderer.xr;
