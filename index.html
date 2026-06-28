@@ -85,10 +85,12 @@
       this.panoId     = null;            // 現在のパノラマID（同じ点への移動を避けるため）
       this.fade       = null;            // 移動時クロスフェードの進行状態
       this.srcTex     = null;            // 現ロケーションの素材テクスチャ（再ベイク用に保持）
-      // 上面/底面の向き(0〜7: 90°回転×左右反転の8通り)。T/Bキーで調整→決まったら数値を固定する。
+      // 上面/底面の向き(0〜7: 90°回転×左右反転の8通り)。実機/PC検証で 6/6 が正しいと確定（2026-06-28）。
+      //   T/Bキー、または URL ?tcap=&bcap= で再調整も可能。
       const q = new URLSearchParams(location.search);
-      this.tcap = (parseInt(q.get('tcap'), 10) || 0) & 7;
-      this.bcap = (parseInt(q.get('bcap'), 10) || 0) & 7;
+      const tq = q.get('tcap'), bq = q.get('bcap');
+      this.tcap = (tq !== null ? parseInt(tq, 10) : 6) & 7;
+      this.bcap = (bq !== null ? parseInt(bq, 10) : 6) & 7;
       this.loadCubemap();
       this.bindControls();
       // 初期パノラマIDを取得（最初の1歩から正しく次の点へ進めるように）
