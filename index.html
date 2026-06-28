@@ -83,6 +83,7 @@
       this.lastLat    = this.data.lat;   // 最後に表示できた地点（移動失敗時はここへ戻す）
       this.lastLng    = this.data.lng;
       this.panoId     = null;            // 現在のパノラマID（同じ点への移動を避けるため）
+      this.fade       = null;            // 移動時クロスフェードの進行状態
       this.loadCubemap();
       this.bindControls();
       // 初期パノラマIDを取得（最初の1歩から正しく次の点へ進めるように）
@@ -121,16 +122,14 @@
       return d.proxy ? d.proxy + encodeURIComponent(target) : target;
     },
 
-    // 古い箱（メッシュ・テクスチャ）を破棄してGPUメモリリークを防ぐ
-    disposeMesh: function () {
-      const old = this.el.getObject3D('mesh');
-      if (!old) return;
-      (Array.isArray(old.material) ? old.material : [old.material]).forEach(m => {
-        if (m.map) m.map.dispose();
-        m.dispose();
+    // 指定メッシュのテクスチャ・マテリアル・ジオメトリを破棄（GPUメモリリーク防止）
+    disposeMeshObj: function (mesh) {
+      if (!mesh) return;
+      (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).forEach(m => {
+        if (m && m.map) m.map.dispose();
+        if (m) m.dispose();
       });
-      old.geometry.dispose();
-      this.el.removeObject3D('mesh');
+      if (mesh.geometry) mesh.geometry.dispose();
     },
 
     // 現在の d.lat / d.lng / d.heading でキューブを（再）構築。
@@ -178,11 +177,16 @@
           return;
         }
 
-        // 新しい箱に差し替え、古い箱を破棄、表示成功した地点を記録
+        // 新しい箱を前面に出し、表示成功した地点を記録
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(500, 500, 500), materials);
-        self.disposeMesh();
-        self.el.setObject3D('mesh', mesh);
+        const oldMesh = self.el.getObject3D('mesh');   // 直前まで見ていた景色
+        self.el.setObject3D('mesh', mesh);             // setObject3D が old を親から外す
         self.lastLat = d.lat; self.lastLng = d.lng;
+
+        // 移動時は「前の景色を手前に残して徐々に消す＋軽くズーム」でGoogleマップ風に繋ぐ。
+        // 初回ロードや非移動時は単純に破棄。
+        if (isMove && oldMesh) self.startFade(oldMesh);
+        else if (oldMesh)      self.disposeMeshObj(oldMesh);
 
         if (failed === 0) self.status.textContent = 'スティック前後で移動／首振りで見渡せます。';
         else self.status.textContent =
@@ -257,6 +261,21 @@
         });
     },
 
+    // 移動演出：古い景色を最前面に置き、透過させながら少し拡大して「前進」感を出す。
+    //   実際の描画(透過の更新)は tick() が毎フレーム進める。
+    startFade: function (oldMesh) {
+      // 進行中のフェードがあれば（連続移動）即終了して破棄
+      if (this.fade) { this.el.removeObject3D('mesh_fade'); this.disposeMeshObj(this.fade.mesh); this.fade = null; }
+      (Array.isArray(oldMesh.material) ? oldMesh.material : [oldMesh.material]).forEach(m => {
+        if (!m) return;
+        m.transparent = true; m.depthTest = false; m.depthWrite = false; m.needsUpdate = true;
+      });
+      oldMesh.renderOrder = 999;          // 新しい景色より常に手前に描画
+      oldMesh.scale.set(1, 1, 1);
+      this.el.setObject3D('mesh_fade', oldMesh);
+      this.fade = { mesh: oldMesh, t: 0, dur: 0.45 };   // 0.45秒で消える
+    },
+
     // スティック入力を「1回倒す=1歩」に変換（倒しっぱなしの連射＝課金暴走を防止）
     handleAxis: function (y) {
       const PUSH = 0.6, NEUTRAL = 0.25;
@@ -274,8 +293,19 @@
       });
     },
 
-    // 毎フレーム：両コントローラーのスティックY（axes[3]）を読み、移動を駆動。
-    tick: function () {
+    // 毎フレーム：移動演出(クロスフェード)を進め、スティックY(axes[3])を読み移動を駆動。
+    tick: function (time, dt) {
+      // --- 移動時クロスフェード（前の景色を徐々に透過＋ズーム） ---
+      if (this.fade) {
+        this.fade.t += (dt || 16) / 1000;
+        const k = Math.min(this.fade.t / this.fade.dur, 1);   // 0→1
+        const m = this.fade.mesh;
+        (Array.isArray(m.material) ? m.material : [m.material]).forEach(mt => { if (mt) mt.opacity = 1 - k; });
+        const s = 1 + 0.18 * k;                               // 前進しているような軽いズーム
+        m.scale.set(s, s, s);
+        if (k >= 1) { this.el.removeObject3D('mesh_fade'); this.disposeMeshObj(m); this.fade = null; }
+      }
+
       const xr = this.el.sceneEl.renderer && this.el.sceneEl.renderer.xr;
       const session = (xr && xr.getSession && xr.getSession()) || this.el.sceneEl.xrSession;
       if (!session || !session.inputSources || !session.inputSources.length) return;
