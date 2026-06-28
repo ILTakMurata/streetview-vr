@@ -84,6 +84,11 @@
       this.lastLng    = this.data.lng;
       this.panoId     = null;            // 現在のパノラマID（同じ点への移動を避けるため）
       this.fade       = null;            // 移動時クロスフェードの進行状態
+      this.srcTex     = null;            // 現ロケーションの素材テクスチャ（再ベイク用に保持）
+      // 上面/底面の向き(0〜7: 90°回転×左右反転の8通り)。T/Bキーで調整→決まったら数値を固定する。
+      const q = new URLSearchParams(location.search);
+      this.tcap = (parseInt(q.get('tcap'), 10) || 0) & 7;
+      this.bcap = (parseInt(q.get('bcap'), 10) || 0) & 7;
       this.loadCubemap();
       this.bindControls();
       // 初期パノラマIDを取得（最初の1歩から正しく次の点へ進めるように）
@@ -96,7 +101,7 @@
 
     // three.js BoxGeometry のマテリアル順: [+X, -X, +Y, -Y, +Z, -Z]
     //   A-Frame の既定カメラは -Z を向く = 正面。よって -Z 面に heading(正面) を割り当てる。
-    //   ※上下(idx 2,3)は箱には貼らず、広角の極キャップ画像で別途ブレンドする。
+    //   ※上下(idx 2,3)は assembleCube で天面/底面に実画像を貼る。
     sideFaces: function (heading) {
       return [
         { idx:0, heading: heading + 90  }, // +X 右
@@ -131,15 +136,58 @@
       if (mesh.geometry) mesh.geometry.dispose();
     },
 
-    // 球体メッシュ（キューブRT＋上下キャップ画像を参照）を破棄。GPUメモリも忘れず解放する。
+    // 球体メッシュ（キューブRTを参照）を破棄。GPUメモリも忘れず解放する。
     disposeSphere: function (mesh) {
       if (!mesh) return;
       if (mesh.material) mesh.material.dispose();
       if (mesh.geometry) mesh.geometry.dispose();
       const u = mesh.userData || {};
       if (u.cubeRT) u.cubeRT.dispose();
-      if (u.texTop) u.texTop.dispose();
-      if (u.texBot) u.texBot.dispose();
+    },
+
+    // テクスチャに 90°回転×左右反転（向き8通り: idx 0〜7）を適用。
+    //   rot = idx%4（×90°）, mirror = idx>=4。中心(0.5,0.5)基準なので uv は [0,1] に収まる。
+    applyOrient: function (tex, idx) {
+      const rot = idx % 4, mirror = idx >= 4 ? -1 : 1;
+      tex.center.set(0.5, 0.5);
+      tex.rotation = rot * Math.PI / 2;
+      tex.repeat.set(mirror, 1);
+      tex.offset.set(0, 0);
+      tex.needsUpdate = true;
+    },
+
+    // 現ロケーションの素材テクスチャ(this.srcTex)から、上下面の向きを適用して
+    //   6面の箱を組み、CubeCamera で完全なキューブテクスチャに焼く（上下も実画像＝歪み無し）。
+    //   ※maps(素材テクスチャ)は再ベイクで使い回すので、ここでは破棄しない。
+    assembleCube: function () {
+      const s = this.srcTex;
+      const mats = new Array(6);
+      s.sides.forEach(o => { mats[o.idx] = new THREE.MeshBasicMaterial({ map: o.tex, side: THREE.BackSide }); });
+      this.applyOrient(s.top, this.tcap);
+      this.applyOrient(s.bot, this.bcap);
+      mats[2] = new THREE.MeshBasicMaterial({ map: s.top, side: THREE.BackSide }); // +Y 上面
+      mats[3] = new THREE.MeshBasicMaterial({ map: s.bot, side: THREE.BackSide }); // -Y 底面
+      const box = new THREE.Mesh(new THREE.BoxGeometry(500, 500, 500), mats);
+      const rt = this.renderToCube(box);
+      box.geometry.dispose();
+      mats.forEach(m => m.dispose());   // map は this.srcTex 側で保持するので解放しない
+      return rt;
+    },
+
+    // T/Bキーで上下面の向きを変えたとき、再取得せず（無料で）焼き直して即反映。
+    rebakeOrient: function () {
+      const sphere = this.el.getObject3D('mesh');
+      if (!sphere || !this.srcTex) return;
+      const oldRT = sphere.userData.cubeRT;
+      const newRT = this.assembleCube();
+      sphere.material.uniforms.tCube.value = newRT.texture;
+      sphere.userData.cubeRT = newRT;
+      if (oldRT) oldRT.dispose();
+      this.status.textContent = this.orientStatus();
+    },
+
+    orientStatus: function () {
+      return `TOP=${this.tcap} / BOT=${this.bcap}（T:上面 B:底面 を回転して合わせる）`;
     },
 
     // 画面外の箱(側面4枚)を CubeCamera で1枚のキューブテクスチャに焼く。
@@ -161,17 +209,13 @@
       return rt;
     },
 
-    // 内側から見る球体。横は側面キューブ(継ぎ目なし)、上下は広角キャップ画像を
-    //   「重なり帯(仰角30〜45°)でクロスフェード」して、明るさ段差を線でなくグラデーションに溶かす。
-    makeSphere: function (cubeRT, texTop, texBot, fovPole) {
-      const halfTan = Math.tan(THREE.MathUtils.degToRad(fovPole * 0.5));
+    // 内側から見る球体。6面の完全なキューブ(側面+上下すべて実画像)をそのままサンプル。
+    //   上下も gnomonic ではなく実画像なので、建物などが引き伸ばされず歪まない。
+    makeSphere: function (cubeRT) {
       const mat = new THREE.ShaderMaterial({
         uniforms: {
-          tCube:       { value: cubeRT.texture },
-          tTop:        { value: texTop },
-          tBot:        { value: texBot },
-          opacity:     { value: 1.0 },
-          poleHalfTan: { value: halfTan }
+          tCube:   { value: cubeRT.texture },
+          opacity: { value: 1.0 }
         },
         vertexShader:
           'varying vec3 vDir;\n' +
@@ -181,38 +225,10 @@
           '}',
         fragmentShader: [
           'uniform samplerCube tCube;',
-          'uniform sampler2D tTop;',
-          'uniform sampler2D tBot;',
           'uniform float opacity;',
-          'uniform float poleHalfTan;',
           'varying vec3 vDir;',
-          '',
-          '// 真上(updown=+1)/真下(-1)を向いた広角画像へ dir を gnomonic 投影して uv を返す。',
-          '// ★向き調整ポイント: 下の vec2(...) の x/z の符号・入替で、上下画像の回転/鏡像を合わせる。',
-          'vec2 poleUV(vec3 dir, float updown){',
-          '  float s = dir.y * updown;                       // その極側なら >0',
-          '  vec2 p = vec2(dir.x, -dir.z * updown) / (s * poleHalfTan);',
-          '  return 0.5 + 0.5 * p;',
-          '}',
-          '',
           'void main(){',
-          '  vec3 dir = normalize(vDir);',
-          '  float hl = length(dir.xz);',
-          '  float elr = atan(dir.y, hl);                         // 仰角(rad)',
-          '  float el = degrees(elr);                             // 仰角 -90..90',
-          '  // 側面キューブは仰角±30°にクランプしてサンプル（上下の黒面に入って黒くにじむのを防ぐ）',
-          '  vec2 hn = dir.xz / max(hl, 1e-4);',
-          '  float clr = clamp(elr, -0.5236, 0.5236);             // ±30°',
-          '  vec3 cdir = vec3(hn.x * cos(clr), sin(clr), hn.y * cos(clr));',
-          '  vec3 col = textureCube(tCube, cdir).rgb;             // 横(側面)',
-          '  if (el > 30.0) {                                     // 上の重なり帯〜真上',
-          '    vec3 tc = texture2D(tTop, poleUV(dir,  1.0)).rgb;',
-          '    col = mix(col, tc, smoothstep(30.0, 45.0, el));',
-          '  } else if (el < -30.0) {                            // 下の重なり帯〜真下',
-          '    vec3 bc = texture2D(tBot, poleUV(dir, -1.0)).rgb;',
-          '    col = mix(col, bc, smoothstep(-30.0, -45.0, el));',
-          '  }',
-          '  gl_FragColor = vec4(col, opacity);',
+          '  gl_FragColor = vec4(textureCube(tCube, normalize(vDir)).rgb, opacity);',
           '}'
         ].join('\n'),
         side: THREE.BackSide,
@@ -220,13 +236,12 @@
       });
       const sphere = new THREE.Mesh(new THREE.SphereGeometry(500, 64, 40), mat);
       sphere.userData.cubeRT = cubeRT;   // 破棄時に解放するため保持
-      sphere.userData.texTop = texTop;
-      sphere.userData.texBot = texBot;
       return sphere;
     },
 
     // 現在の d.lat / d.lng / d.heading で景色を（再）構築。
-    //   側面4枚(fov90)を箱→キューブに焼き、上下は広角(fov120)2枚をキャップとしてブレンド。計6リクエスト。
+    //   側面4枚＋上下2枚すべて fov90 で撮り、6面の箱→完全なキューブに焼く（歪み無し）。計6リクエスト。
+    //   素材テクスチャは this.srcTex に保持し、T/Bキーでの再ベイクで使い回す。
     //   isMove=true（移動時）に全滅したら暗転させず元の景色へ引き返す。
     loadCubemap: function (isMove) {
       const d = this.data;
@@ -234,39 +249,36 @@
       this.loading = true;
       this.status.textContent = '読み込み中…';
 
-      const FOV_SIDE = 90, FOV_POLE = 120;   // 上下は広めに撮って側面と重ねる（重なり帯=仰角30〜45°）
+      const FOV = 90;                       // 側面・上下とも fov90＝キューブの各面そのもの
       const sides = this.sideFaces(d.heading);
-      const materials = new Array(6);
-      // 上下面(idx 2,3)は箱に貼らない（広角キャップで覆う）→ 黒で埋めておく
-      materials[2] = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
-      materials[3] = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+      const sideTex = [];
+      let topTex = null, botTex = null;
 
       let pending = 6, failed = 0;
-      let texTop = null, texBot = null;
       const done = () => { if (--pending === 0) finish(); };
 
-      // 側面4枚（箱に貼る）
+      // 側面4枚
       sides.forEach(f => {
-        const url = this.buildUrl(f.heading, 0, FOV_SIDE);
+        const url = this.buildUrl(f.heading, 0, FOV);
         const tex = this.loader.load(url, done, undefined,
           (e) => { failed++; console.error('side load err idx=' + f.idx, e); done(); });
         tex.colorSpace = THREE.SRGBColorSpace;
         // BackSide（箱の内側）で見ると左右反転するので水平フリップで補正
         tex.wrapS = THREE.RepeatWrapping;
         tex.repeat.x = -1; tex.offset.x = 1;
-        materials[f.idx] = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide });
+        sideTex.push({ idx: f.idx, tex });
       });
 
-      // 上下キャップ（広角・別テクスチャ。球シェーダで重なり帯ブレンド）
+      // 上下2枚（fov90。箱の天面/底面に直接貼る。向きは assembleCube で適用）
       const loadCap = (pitch, assign) => {
-        const url = this.buildUrl(d.heading, pitch, FOV_POLE);
+        const url = this.buildUrl(d.heading, pitch, FOV);
         const tex = this.loader.load(url, done, undefined,
           (e) => { failed++; console.error('cap load err pitch=' + pitch, e); done(); });
         tex.colorSpace = THREE.SRGBColorSpace;
         assign(tex);
       };
-      loadCap( 90, t => { texTop = t; });
-      loadCap(-90, t => { texBot = t; });
+      loadCap( 90, t => { topTex = t; });
+      loadCap(-90, t => { botTex = t; });
 
       // 全6枚の読み込みが終わってから差し替え（暗転防止）
       function finish() {
@@ -275,19 +287,23 @@
         // 移動先で全滅 → 元の景色を維持して引き返す
         if (failed >= 6 && isMove) {
           d.lat = self.lastLat; d.lng = self.lastLng;
-          materials.forEach(m => { if (m) { if (m.map) m.map.dispose(); m.dispose(); } });
-          if (texTop) texTop.dispose();
-          if (texBot) texBot.dispose();
+          sideTex.forEach(o => o.tex.dispose());
+          if (topTex) topTex.dispose();
+          if (botTex) botTex.dispose();
           self.status.textContent = 'その方向にはこれ以上進めません。';
           return;
         }
 
-        // 側面4枚の箱を画面外で組み、CubeCameraでキューブに焼く（横は継ぎ目なし）。
-        const boxMesh = new THREE.Mesh(new THREE.BoxGeometry(500, 500, 500), materials);
-        const cubeRT  = self.renderToCube(boxMesh);
-        self.disposeMeshObj(boxMesh);                  // 側面テクスチャはRTに焼いたので破棄（texTop/Botは球で使うので残す）
+        // 直前ロケーションの素材テクスチャ（再ベイク用に保持していた分）を解放
+        if (self.srcTex) {
+          self.srcTex.sides.forEach(o => o.tex.dispose());
+          self.srcTex.top.dispose(); self.srcTex.bot.dispose();
+        }
+        self.srcTex = { sides: sideTex, top: topTex, bot: botTex };
 
-        const sphere  = self.makeSphere(cubeRT, texTop, texBot, FOV_POLE);
+        // 6面の箱を完全なキューブに焼く（横も上下も継ぎ目・歪み無し）
+        const cubeRT  = self.assembleCube();
+        const sphere  = self.makeSphere(cubeRT);
         const oldMesh = self.el.getObject3D('mesh');   // 直前まで見ていた景色
         self.el.setObject3D('mesh', sphere);           // setObject3D が old を親から外す
         self.lastLat = d.lat; self.lastLng = d.lng;
@@ -297,7 +313,7 @@
         if (isMove && oldMesh) self.startFade(oldMesh);
         else if (oldMesh)      self.disposeSphere(oldMesh);
 
-        if (failed === 0) self.status.textContent = 'スティック前後で移動／首振りで見渡せます。';
+        if (failed === 0) self.status.textContent = self.orientStatus();
         else self.status.textContent =
           `${failed}/6 枚が読み込めませんでした。コンソールに CORS エラーが出ていれば PROXY を設定してください。`;
       }
@@ -397,6 +413,9 @@
       window.addEventListener('keydown', e => {
         if (e.key === 'ArrowUp'   || e.key === 'w' || e.key === 'W') self.move(+1);
         if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') self.move(-1);
+        // 上下面の向き合わせ（T=上面 / B=底面 を8通り切替→無料で焼き直し）
+        if (e.key === 't' || e.key === 'T') { self.tcap = (self.tcap + 1) & 7; self.rebakeOrient(); }
+        if (e.key === 'b' || e.key === 'B') { self.bcap = (self.bcap + 1) & 7; self.rebakeOrient(); }
       });
     },
 
