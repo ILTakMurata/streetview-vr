@@ -30,16 +30,39 @@
     #enter{margin-top:10px;width:100%;cursor:pointer;font:inherit;font-weight:800;
       color:#0E1118;background:#C9A24B;border:none;border-radius:9px;padding:11px;}
     #enter:active{transform:translateY(1px);}
+    #change{margin-top:8px;width:100%;cursor:pointer;font:inherit;font-size:12.5px;
+      color:#C9A24B;background:transparent;border:1px solid #3A4254;border-radius:8px;padding:8px;}
+    #change:active{transform:translateY(1px);}
+    /* スタート地点選択（起動時に表示するモーダル） */
+    #startmenu{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;
+      background:rgba(8,10,16,.72);backdrop-filter:blur(6px);}
+    #startmenu .card{background:rgba(20,25,36,.97);border:1px solid #2A3142;border-radius:16px;
+      padding:20px 22px;max-width:min(420px,92vw);width:100%;}
+    #startmenu h2{margin:0 0 14px;font-size:18px;}
+    #placelist{display:flex;flex-direction:column;gap:9px;}
+    .place-btn{cursor:pointer;font:inherit;font-weight:700;text-align:left;
+      color:#ECEEF4;background:#222A3A;border:1px solid #313B50;border-radius:10px;padding:13px 15px;}
+    .place-btn:hover{background:#2C374B;}
+    .place-btn:active{transform:translateY(1px);}
   </style>
 </head>
 <body>
   <div id="hud">
     <h1>Street View 360°</h1>
-    <p id="status">読み込み中…</p>
+    <p id="status">スタート地点を選択してください</p>
     <button id="enter">VRで見る</button>
+    <button id="change">場所を変える</button>
     <p style="font-size:11.5px;color:#7E879B;margin:8px 0 0;line-height:1.5;">
       操作：スティック前後で移動／首振りで見回す<br>（PCはキーボード ↑↓ でも移動可）
     </p>
+  </div>
+
+  <!-- 起動時に出るスタート地点メニュー（場所はボタンで選択）-->
+  <div id="startmenu">
+    <div class="card">
+      <h2>スタート地点を選択</h2>
+      <div id="placelist"></div>
+    </div>
   </div>
 
   <a-scene background="color: #0E1118" renderer="colorManagement: true; antialias: true"
@@ -62,6 +85,15 @@
   </a-scene>
 
   <script>
+  // 起動時に選べるスタート地点。ここに追記すればメニューに増える。
+  const PLACES = [
+    { name: '横浜山下公園',                 lat: 35.44580145745811,  lng: 139.65057410078293 },
+    { name: '港の見える丘公園',             lat: 35.44032653463933,  lng: 139.6546539893664  },
+    { name: '新宿ゴジラヘッド',             lat: 35.69484125463824,  lng: 139.7019420870705  },
+    { name: '新大久保アサヒニューシティビル', lat: 35.7010897160769,   lng: 139.7055707869594  },
+    { name: '池袋アニメイト前',             lat: 35.731152915937656, lng: 139.71531356988348 }
+  ];
+
   AFRAME.registerComponent('sv-cubemap', {
     schema: {
       key:    {type:'string'},
@@ -91,11 +123,40 @@
       const tq = q.get('tcap'), bq = q.get('bcap');
       this.tcap = (tq !== null ? parseInt(tq, 10) : 6) & 7;
       this.bcap = (bq !== null ? parseInt(bq, 10) : 6) & 7;
-      this.loadCubemap();
+      this.placeName  = '';              // 現在地の表示名（ステータス表示用）
       this.bindControls();
-      // 初期パノラマIDを取得（最初の1歩から正しく次の点へ進めるように）
+      this.buildPlaceMenu();             // 起動時はスタート地点メニューを表示（選択するまで読み込まない）
+    },
+
+    // スタート地点メニューを組み立てて表示。各ボタンで goTo()。
+    buildPlaceMenu: function () {
+      const self = this;
+      const menu = document.getElementById('startmenu');
+      const list = document.getElementById('placelist');
+      list.innerHTML = '';
+      PLACES.forEach(p => {
+        const b = document.createElement('button');
+        b.className = 'place-btn';
+        b.textContent = p.name;
+        b.addEventListener('click', () => { menu.style.display = 'none'; self.goTo(p); });
+        list.appendChild(b);
+      });
+      document.getElementById('change').onclick = () => { menu.style.display = 'flex'; };
+      menu.style.display = 'flex';
+    },
+
+    // 指定スタート地点へ移動して景色を構築。最初のパノラマIDも取得しておく。
+    goTo: function (p) {
+      if (this.loading) return;
+      const d = this.data;
+      d.lat = p.lat; d.lng = p.lng;
+      this.placeName = p.name;
+      this.panoId = null;                // 別地点なので前のIDは破棄
+      this.lastLat = p.lat; this.lastLng = p.lng;
+      this.loadCubemap();                // 初回は location+radius でスナップ読み込み
+      // 最初の1歩から正しく次の点へ進めるよう、現在地のパノラマIDを取得
       const self0 = this;
-      fetch(this.metaUrl(this.data.lat, this.data.lng), { referrerPolicy: 'unsafe-url' })
+      fetch(this.metaUrl(p.lat, p.lng), { referrerPolicy: 'unsafe-url' })
         .then(r => r.json())
         .then(m => { if (m.status === 'OK') self0.panoId = m.pano_id; })
         .catch(() => {});
@@ -315,7 +376,8 @@
         if (isMove && oldMesh) self.startFade(oldMesh);
         else if (oldMesh)      self.disposeSphere(oldMesh);
 
-        if (failed === 0) self.status.textContent = self.orientStatus();
+        if (failed === 0) self.status.textContent =
+          (self.placeName ? self.placeName + '：' : '') + 'スティック前後で移動／首振りで見渡せます。';
         else self.status.textContent =
           `${failed}/6 枚が読み込めませんでした。コンソールに CORS エラーが出ていれば PROXY を設定してください。`;
       }
