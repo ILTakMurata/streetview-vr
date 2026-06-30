@@ -87,11 +87,11 @@
   <script>
   // 起動時に選べるスタート地点。ここに追記すればメニューに増える。
   const PLACES = [
+    { name: '新大久保アサヒニューシティビル', lat: 35.7010897160769,   lng: 139.7055707869594  },
+    { name: '池袋アニメイト前',             lat: 35.731152915937656, lng: 139.71531356988348 },
     { name: '横浜山下公園',                 lat: 35.44580145745811,  lng: 139.65057410078293 },
     { name: '港の見える丘公園',             lat: 35.44032653463933,  lng: 139.6546539893664  },
-    { name: '新宿ゴジラヘッド',             lat: 35.69484125463824,  lng: 139.7019420870705  },
-    { name: '新大久保アサヒニューシティビル', lat: 35.7010897160769,   lng: 139.7055707869594  },
-    { name: '池袋アニメイト前',             lat: 35.731152915937656, lng: 139.71531356988348 }
+    { name: '新宿ゴジラヘッド',             lat: 35.69484125463824,  lng: 139.7019420870705  }
   ];
 
   AFRAME.registerComponent('sv-cubemap', {
@@ -492,7 +492,8 @@
         const m = this.fade.mesh;
         // フェードはズームに対して後ろ寄り(1 - k*k)。ズーム中は不透明を保ち、終盤に消える＝ズーム＞フェード。
         if (m.material.uniforms && m.material.uniforms.opacity) m.material.uniforms.opacity.value = 1 - k * k;
-        const s = 1 + 0.4 * k;                                // 前進しているような前へのズーム（強め）
+        // 前進しているような前へのズーム。終盤に向けて加速(k*k)させ、Googleストリートビュー風にグッと迫る。
+        const s = 1 + 2.2 * k * k;                            // 1.0倍 → 約3.2倍まで一気に拡大
         m.scale.set(s, s, s);
         if (k >= 1) { this.el.removeObject3D('mesh_fade'); this.disposeSphere(m); this.fade = null; }
       }
